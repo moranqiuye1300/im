@@ -1,0 +1,147 @@
+definitions:
+  models.UserBasic:
+    type: object
+  service.DeleteUserReq:
+    properties:
+      id:
+        minimum: 1
+        type: integer
+    required:
+    - id
+    type: object
+  service.MsgResp:
+    properties:
+      code:
+        type: integer
+      message:
+        type: string
+    type: object
+  service.UpdateUserReq:
+    properties:
+      email:
+        type: string
+      id:
+        minimum: 1
+        type: integer
+      name:
+        maxLength: 20
+        minLength: 2
+        type: string
+      password:
+        minLength: 6
+        type: string
+      phone:
+        type: string
+    required:
+    - id
+    type: object
+info:
+  contact: {}
+paths:
+  /user/create:
+    post:
+      consumes:
+      - application/json
+      description: 传入用户JSON信息创建账号
+      parameters:
+      - description: 用户信息表单
+        in: body
+        name: user
+        required: true
+        schema:
+          $ref: '#/definitions/models.UserBasic'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/service.MsgResp'
+        "400":
+          description: JSON参数解析失败
+          schema:
+            $ref: '#/definitions/service.MsgResp'
+        "500":
+          description: 数据库写入失败
+          schema:
+            $ref: '#/definitions/service.MsgResp'
+      summary: 新增用户
+      tags:
+      - 用户模块
+  /user/delete:
+    post:
+      consumes:
+      - application/json
+      description: 根据用户ID删除用户
+      parameters:
+      - description: 仅需用户id
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/service.DeleteUserReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/service.MsgResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/service.MsgResp'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/service.MsgResp'
+      summary: 删除用户
+      tags:
+      - 用户模块
+  /user/list:
+    get:
+      consumes:
+      - application/json
+      description: 获取系统所有用户基础信息
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 查询全部用户
+      tags:
+      - 用户模块
+  /user/update:
+    post:
+      consumes:
+      - application/json
+      description: 根据用户ID更新信息
+      parameters:
+      - description: 用户更新参数
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/service.UpdateUserReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/service.MsgResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/service.MsgResp'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/service.MsgResp'
+      summary: 更新用户信息
+      tags:
+      - 用户模块
+swagger: "2.0"

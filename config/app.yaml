@@ -1,0 +1,6 @@
+mysql:
+  dsn: root:123456@tcp(127.0.0.1:3306)/im?charset=utf8mb4&parseTime=True&loc=Local
+
+jwt:
+  secret: im-secret-key-2024
+  expire: 24 # token过期时间（小时）
