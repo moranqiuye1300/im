@@ -3,8 +3,14 @@ package service
 import (
 	"IM/models"
 	"IM/utils"
+	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -320,4 +326,132 @@ func Login(c *gin.Context) {
 		UserID:   user.ID,
 		UserName: user.Name,
 	})
+}
+
+// WS升级器
+var upGrade = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+// 在线客户端管理
+var (
+	onlineClients = make(map[*websocket.Conn]bool)
+	clientMu      sync.Mutex
+	writeMu       sync.Mutex // 并发写ws锁，防止1006异常关闭
+)
+
+// broadcast 接收redis消息，推送给所有在线ws客户端 + 异步入库
+func Broadcast(payload string) {
+	// 解析Redis中携带用户ID的JSON消息
+	var data map[string]any
+	err := json.Unmarshal([]byte(payload), &data)
+	if err != nil {
+		log.Println("解析Redis消息JSON失败：", err)
+		return
+	}
+	sendUID := uint(data["send_user_id"].(float64))
+	content := data["content"].(string)
+
+	// 异步入库：数据库操作全部交给models层，service不直接操作DB
+	go func() {
+		chatMsg := &models.ChatMsg{
+			SendUserID: sendUID,
+			RecvUserID: 0, // 全局群聊，私聊字段置0
+			GroupID:    0,
+			Content:    content,
+			MsgType:    1, // 1=文本消息
+		}
+		if err := models.CreateChatMsg(chatMsg); err != nil {
+			log.Println("models保存聊天消息失败：", err)
+		}
+	}()
+
+	// 广播纯文本内容给所有前端
+	msg := []byte(content)
+	clientMu.Lock()
+	defer clientMu.Unlock()
+
+	for conn := range onlineClients {
+		writeMu.Lock()
+		writeErr := conn.WriteMessage(websocket.TextMessage, msg)
+		writeMu.Unlock()
+		if writeErr != nil {
+			log.Printf("推送消息给客户端失败: %v", writeErr)
+			delete(onlineClients, conn)
+			_ = conn.Close()
+		}
+	}
+}
+func SendMsg(c *gin.Context) {
+	// ========== Token鉴权逻辑 ==========
+	tokenStr := c.Query("token")
+	if tokenStr == "" {
+		log.Println("WS拒绝连接：未携带token参数")
+		return
+	}
+	claims, err := utils.ParseToken(tokenStr)
+	if err != nil {
+		log.Println("WS拒绝连接：token非法或过期, err:", err)
+		return
+	}
+	loginUserID := claims.UserID
+	log.Printf("用户ID:%d 建立WS连接", loginUserID)
+
+	// 1. 协议升级
+	conn, err := upGrade.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Println("升级协议错误：", err)
+		return
+	}
+
+	// 2. 上线加入在线集合
+	clientMu.Lock()
+	onlineClients[conn] = true
+	clientMu.Unlock()
+
+	// 3. 下线清理
+	defer func() {
+		clientMu.Lock()
+		delete(onlineClients, conn)
+		clientMu.Unlock()
+		_ = conn.Close()
+		log.Printf("用户ID:%d 客户端连接关闭", loginUserID)
+	}()
+
+	// 心跳保活，避免1006断开
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	// 循环读取客户端消息
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			log.Println("读取消息错误：", err)
+			break
+		}
+		content := string(message)
+		log.Printf("用户%d发送消息：%s", loginUserID, content)
+
+		// 组装结构化数据：携带发送人ID，发布到Redis
+		msgData := map[string]any{
+			"send_user_id": loginUserID,
+			"content":      content,
+		}
+		jsonBuf, err := json.Marshal(msgData)
+		if err != nil {
+			log.Println("消息序列化失败：", err)
+			continue
+		}
+		err = utils.Publish(c.Request.Context(), "websocket", string(jsonBuf))
+		if err != nil {
+			log.Println("redis发布失败：", err)
+		}
+	}
 }

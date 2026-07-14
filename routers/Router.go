@@ -45,6 +45,7 @@ func Router() *gin.Engine {
 	r.GET("/", service.GetIndex)
 	r.POST("/user/login", service.Login)
 	r.POST("/user/create", service.CreateUser)
+	r.GET("/user/send", service.SendMsg)
 
 	// ========== 需要JWT认证的路由 ==========
 	auth := r.Group("/user")

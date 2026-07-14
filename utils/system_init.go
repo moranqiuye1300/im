@@ -1,11 +1,13 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/viper"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -13,6 +15,7 @@ import (
 )
 
 var DB *gorm.DB
+var RedisClient *redis.Client
 
 func InitConfig() {
 	viper.SetConfigFile("config/app.yaml")
@@ -36,4 +39,49 @@ func InitMySQL() {
 		log.Fatalf("数据库连接失败，详细错误：%v", err)
 	}
 	DB = sql
+}
+func InitRedis() {
+	RedisClient = redis.NewClient(&redis.Options{
+		Addr:         viper.GetString("redis.addr"),
+		Password:     viper.GetString("redis.password"),
+		DB:           viper.GetInt("redis.db"),
+		PoolSize:     viper.GetInt("redis.poolSize"),
+		MinIdleConns: viper.GetInt("redis.minIdleConns"),
+	})
+	ctx := context.Background()
+	pong, err := RedisClient.Ping(ctx).Result()
+	if err != nil {
+		log.Fatalf("Redis连接失败，详细错误：%v", err)
+	} else {
+		log.Println("Redis连接成功，Ping返回：", pong)
+	}
+}
+
+const (
+	PublishKey = "websocket"
+)
+
+func Publish(ctx context.Context, channel, message string) error {
+	var err error
+	err = RedisClient.Publish(ctx, channel, message).Err()
+	if err != nil {
+		log.Printf("Redis发布消息失败，详细错误：%v", err)
+	}
+	return err
+}
+
+// ListenPatternChannel 持续模式订阅，收到消息执行回调
+func ListenPatternChannel(ctx context.Context, pattern string, callback func(string)) error {
+	pubsub := RedisClient.PSubscribe(ctx, pattern)
+	defer pubsub.Close()
+
+	for {
+		msg, err := pubsub.ReceiveMessage(ctx)
+		if err != nil {
+			log.Printf("订阅接收消息异常: %v", err)
+			return err
+		}
+		// 拿到消息payload执行业务逻辑（推送给websocket客户端）
+		callback(msg.Payload)
+	}
 }
