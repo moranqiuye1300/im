@@ -42,6 +42,7 @@ func Router() *gin.Engine {
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
 	// ========== 公开路由（无需认证） ==========
+	r.Static("/static", "./static")
 	r.GET("/", service.GetIndex)
 	r.POST("/user/login", service.Login)
 	r.POST("/user/create", service.CreateUser)

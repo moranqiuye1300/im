@@ -15,12 +15,12 @@ type UserBasic struct {
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `json:"deleted_at" gorm:"index"`
 
-	Name          string     `json:"name" binding:"required,min=2,max=20" comment:"用户名"`
+	Name          string     `json:"name" binding:"required,min=2,max=20" gorm:"uniqueIndex:idx_name" comment:"用户名"`
 	Password      string     `json:"password" binding:"required,min=6" comment:"登录密码"`
 	Salt          string     `json:"salt" comment:"密码盐值"`
-	Phone         string     `json:"phone" binding:"required,len=11,numeric,phone" comment:"手机号"`
+	Phone         string     `json:"phone" binding:"required,len=11,numeric" comment:"手机号"`
 	Email         string     `json:"email" binding:"required,email" comment:"邮箱"`
-	Identity      string     `json:"identity" binding:"required" comment:"唯一身份标识"`
+	Identity      string     `json:"identity" comment:"唯一身份标识"`
 	ClientIP      string     `json:"client_ip" comment:"登录IP"`
 	ClientPort    string     `json:"client_port" comment:"登录端口"`
 	LoginTime     *time.Time `json:"login_time" gorm:"datetime(3);null" comment:"登录时间"`

@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IM 即时通讯 Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; background: #f0f2f5; height: 100vh; display: flex; justify-content: center; align-items: center; }
+
+  /* ---------- 整体容器 ---------- */
+  .app { width: 960px; height: 700px; background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,.12); display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ---------- 登录/注册栏 ---------- */
+  .auth-bar { display: flex; gap: 8px; padding: 16px 20px; background: #fff; border-bottom: 1px solid #eee; align-items: center; flex-wrap: wrap; }
+  .auth-bar input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; outline: none; }
+  .auth-bar input:focus { border-color: #4096ff; }
+  .auth-bar button { padding: 8px 18px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; color: #fff; }
+  .auth-bar .btn-login  { background: #4096ff; }
+  .auth-bar .btn-reg    { background: #52c41a; }
+  .auth-bar .btn:active { opacity: .8; }
+  .auth-bar .user-info  { margin-left: auto; font-size: 13px; color: #666; display: flex; align-items: center; gap: 12px; }
+  .auth-bar .user-info .badge { background: #e6f4ff; color: #1677ff; padding: 2px 10px; border-radius: 10px; font-weight: 600; }
+
+  /* ---------- 主体：左（用户列表）+ 右（聊天区） ---------- */
+  .main { flex: 1; display: flex; overflow: hidden; }
+
+  /* 左侧用户列表 */
+  .sidebar { width: 260px; background: #fafafa; border-right: 1px solid #eee; display: flex; flex-direction: column; }
+  .sidebar .title { padding: 14px 16px; font-size: 14px; font-weight: 600; color: #333; border-bottom: 1px solid #eee; }
+  .sidebar .user-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .sidebar .user-item { display: flex; align-items: center; gap: 10px; padding: 10px 16px; cursor: pointer; transition: background .15s; border-bottom: 1px solid #f5f5f5; }
+  .sidebar .user-item:hover { background: #e6f4ff; }
+  .sidebar .user-item.active { background: #d6e8ff; }
+  .sidebar .user-item .avatar { width: 36px; height: 36px; border-radius: 50%; background: #4096ff; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; }
+  .sidebar .user-item .name { font-size: 14px; color: #333; }
+  .sidebar .user-item .status { width: 8px; height: 8px; border-radius: 50%; margin-left: auto; }
+  .sidebar .user-item .status.online { background: #52c41a; }
+  .sidebar .user-item .status.offline { background: #d9d9d9; }
+
+  /* 右侧聊天区 */
+  .chat { flex: 1; display: flex; flex-direction: column; }
+  .chat .chat-header { padding: 14px 20px; border-bottom: 1px solid #eee; font-size: 15px; font-weight: 600; color: #333; background: #fff; }
+  .chat .chat-header .hint { font-weight: 400; font-size: 12px; color: #999; }
+  .chat .msgs { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+  .chat .msgs .empty { text-align: center; color: #bbb; font-size: 14px; margin-top: 60px; }
+
+  /* 消息气泡 */
+  .msg { max-width: 70%; padding: 10px 14px; border-radius: 10px; font-size: 14px; line-height: 1.5; word-break: break-word; position: relative; }
+  .msg .meta { font-size: 11px; color: #999; margin-top: 4px; }
+  .msg.me  { align-self: flex-end; background: #4096ff; color: #fff; border-bottom-right-radius: 4px; }
+  .msg.me .meta  { color: rgba(255,255,255,.7); text-align: right; }
+  .msg.other { align-self: flex-start; background: #f5f5f5; color: #333; border-bottom-left-radius: 4px; }
+
+  /* 输入区 */
+  .input-area { display: flex; gap: 10px; padding: 12px 20px; border-top: 1px solid #eee; background: #fff; }
+  .input-area input { flex: 1; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; }
+  .input-area input:focus { border-color: #4096ff; }
+  .input-area button { padding: 10px 24px; background: #4096ff; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+  .input-area button:disabled { background: #d9d9d9; cursor: not-allowed; }
+
+  /* ---------- toast ---------- */
+  .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); padding: 10px 24px; border-radius: 8px; font-size: 14px; color: #fff; z-index: 999; display: none; animation: fadeIn .3s; }
+  .toast.success { background: #52c41a; }
+  .toast.error   { background: #ff4d4f; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(-10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+
+  /* 滚动条美化 */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: #d9d9d9; border-radius: 3px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ====== 登录/注册栏 ====== -->
+  <div class="auth-bar" id="authBar">
+    <input id="loginName"  placeholder="用户名" value="alice" />
+    <input id="loginPwd"   placeholder="密码" type="password" value="123456" />
+    <button class="btn-login" onclick="login()">登录</button>
+    <button class="btn-reg"   onclick="register()">注册</button>
+    <div class="user-info" id="userInfo" style="display:none;">
+      <span class="badge" id="myBadge"></span>
+      <span id="wsStatus" style="font-size:12px;"></span>
+      <button onclick="logout()" style="background:transparent;color:#999;border:1px solid #ddd;padding:4px 12px;border-radius:6px;cursor:pointer;">退出</button>
+    </div>
+  </div>
+
+  <!-- ====== 主体 ====== -->
+  <div class="main">
+    <!-- 左侧用户列表 -->
+    <div class="sidebar">
+      <div class="title">👥 用户列表</div>
+      <div class="user-list" id="userList"></div>
+    </div>
+    <!-- 右侧聊天 -->
+    <div class="chat">
+      <div class="chat-header" id="chatHeader">
+        选择一个用户开始聊天 <span class="hint">（点击左侧用户）</span>
+      </div>
+      <div class="msgs" id="msgBox">
+        <div class="empty">💬 暂无消息</div>
+      </div>
+      <div class="input-area">
+        <input id="msgInput" placeholder="输入消息..." disabled
+               onkeydown="if(event.key==='Enter') sendMsg()" />
+        <button id="sendBtn" disabled onclick="sendMsg()">发送</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ============================================================
+//  状态
+// ============================================================
+const STATE = {
+  token: '',
+  myId: 0,
+  myName: '',
+  ws: null,
+  targetId: 0,      // 当前聊天对象
+  targetName: '',
+  users: [],         // 所有用户
+}
+
+const API_BASE = 'http://127.0.0.1:8080'
+const WS_BASE  = 'ws://127.0.0.1:8080'
+
+// ============================================================
+//  Toast
+// ============================================================
+function toast(msg, type = 'success') {
+  const el = document.getElementById('toast')
+  el.textContent = msg
+  el.className = `toast ${type}`
+  el.style.display = 'block'
+  setTimeout(() => { el.style.display = 'none' }, 2500)
+}
+
+// ============================================================
+//  用户注册 / 登录
+// ============================================================
+async function register() {
+  const name = document.getElementById('loginName').value.trim()
+  const pwd  = document.getElementById('loginPwd').value.trim()
+  if (!name || !pwd) { toast('请填写用户名和密码', 'error'); return }
+  try {
+    const r = await fetch(`${API_BASE}/user/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name, password: pwd,
+        phone: '13800000000', email: `${name}@test.com`
+      }),
+    })
+    const d = await r.json()
+    if (d.code === 200) { toast('注册成功，请登录'); }
+    else { toast('注册失败: ' + d.message, 'error'); }
+  } catch (e) { toast('网络错误: ' + e.message, 'error'); }
+}
+
+async function login() {
+  const name = document.getElementById('loginName').value.trim()
+  const pwd  = document.getElementById('loginPwd').value.trim()
+  if (!name || !pwd) { toast('请填写用户名和密码', 'error'); return }
+  try {
+    const r = await fetch(`${API_BASE}/user/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, password: pwd }),
+    })
+    const d = await r.json()
+    if (d.code !== 200) { toast('登录失败: ' + d.message, 'error'); return }
+    STATE.token  = d.data.token
+    STATE.myId   = d.data.user_id
+    STATE.myName = d.data.user_name
+
+    document.getElementById('authBar').querySelectorAll('input,button').forEach(el => {
+      if (el.id !== 'loginName' && el.id !== 'loginPwd') return
+      el.style.display = 'none'
+    })
+    document.getElementById('loginName').style.display = 'none'
+    document.getElementById('loginPwd').style.display = 'none'
+
+    const info = document.getElementById('userInfo')
+    info.style.display = 'flex'
+    document.getElementById('myBadge').textContent = `👤 ${STATE.myName} (#${STATE.myId})`
+
+    toast('登录成功!')
+    connectWS()
+    await loadUsers()
+  } catch (e) { toast('网络错误: ' + e.message, 'error'); }
+}
+
+function logout() {
+  if (STATE.ws) { STATE.ws.close(); STATE.ws = null; }
+  STATE.token = ''; STATE.myId = 0; STATE.myName = ''; STATE.targetId = 0;
+  location.reload()
+}
+
+// ============================================================
+//  WebSocket 连接
+// ============================================================
+function connectWS() {
+  if (STATE.ws) { STATE.ws.close(); }
+  const url = `${WS_BASE}/user/send?token=${STATE.token}`
+  STATE.ws = new WebSocket(url)
+
+  STATE.ws.onopen = () => {
+    document.getElementById('wsStatus').textContent = '🟢 已连接'
+    document.getElementById('msgInput').disabled = false
+    document.getElementById('sendBtn').disabled = false
+  }
+
+  STATE.ws.onclose = () => {
+    document.getElementById('wsStatus').textContent = '🔴 已断开'
+    document.getElementById('msgInput').disabled = true
+    document.getElementById('sendBtn').disabled = true
+    // 3 秒后重连
+    setTimeout(() => {
+      if (STATE.token) connectWS()
+    }, 3000)
+  }
+
+  STATE.ws.onerror = () => {
+    document.getElementById('wsStatus').textContent = '🔴 连接异常'
+  }
+
+  STATE.ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data)
+      // 如果这条消息是发给当前聊天对象的，或者发送者就是当前聊天对象，展示它
+      if (msg.send_user_id === STATE.targetId || msg.recv_user_id === STATE.targetId) {
+        appendMsg(msg)
+      }
+      // 更新在线状态（如果收到消息说明对方在线）
+      updateOnlineStatus(msg.send_user_id, true)
+    } catch {
+      // 纯文本消息，直接展示
+      if (STATE.targetId !== 0) {
+        appendMsg({ content: evt.data, send_user_id: 0, timestamp: Date.now() })
+      }
+    }
+  }
+}
+
+// ============================================================
+//  加载用户列表
+// ============================================================
+async function loadUsers() {
+  if (!STATE.token) return
+  try {
+    const r = await fetch(`${API_BASE}/user/list`, {
+      headers: { 'Authorization': `Bearer ${STATE.token}` },
+    })
+    const d = await r.json()
+    if (d.code !== 200) return
+    STATE.users = d.data || []
+    renderUserList()
+  } catch (e) { /* ignore */ }
+}
+
+function renderUserList() {
+  const el = document.getElementById('userList')
+  el.innerHTML = STATE.users
+    .filter(u => u.id !== STATE.myId) // 排除自己
+    .map(u => `
+      <div class="user-item ${u.id === STATE.targetId ? 'active' : ''}"
+           onclick="selectUser(${u.id}, '${u.name}')"
+           data-id="${u.id}">
+        <div class="avatar">${u.name.charAt(0).toUpperCase()}</div>
+        <span class="name">${u.name}</span>
+        <span class="status offline" id="status_${u.id}"></span>
+      </div>
+    `).join('') || '<div style="padding:20px;text-align:center;color:#bbb;">暂无其他用户</div>'
+}
+
+function selectUser(id, name) {
+  STATE.targetId = id
+  STATE.targetName = name
+  document.getElementById('chatHeader').innerHTML = `💬 与 <strong>${name}</strong> 的私聊 <span class="hint">（输入框回车发送）</span>`
+
+  // 高亮
+  document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'))
+  const item = document.querySelector(`.user-item[data-id="${id}"]`)
+  if (item) item.classList.add('active')
+
+  // 清空消息区
+  document.getElementById('msgBox').innerHTML = '<div class="empty">💬 暂无消息</div>'
+  document.getElementById('msgInput').placeholder = `发给 ${name}...`
+  document.getElementById('msgInput').focus()
+}
+
+// ============================================================
+//  在线状态（简化：收到消息就标记对方在线，超时标记离线）
+// ============================================================
+const onlineTimers = {}
+
+function updateOnlineStatus(userId, online) {
+  const dot = document.getElementById(`status_${userId}`)
+  if (!dot) return
+  dot.className = `status ${online ? 'online' : 'offline'}`
+  if (online) {
+    clearTimeout(onlineTimers[userId])
+    onlineTimers[userId] = setTimeout(() => {
+      updateOnlineStatus(userId, false)
+    }, 70000) // 70秒无消息视为离线
+  }
+}
+
+// ============================================================
+//  发送 / 接收消息
+// ============================================================
+function sendMsg() {
+  if (!STATE.ws || STATE.ws.readyState !== WebSocket.OPEN) {
+    toast('WebSocket 未连接', 'error'); return
+  }
+  if (!STATE.targetId) { toast('请先在左侧选择一个用户', 'error'); return }
+  const input = document.getElementById('msgInput')
+  const content = input.value.trim()
+  if (!content) return
+
+  const payload = {
+    recv_user_id: STATE.targetId,
+    content,
+    msg_type: 1,
+  }
+  STATE.ws.send(JSON.stringify(payload))
+  input.value = ''
+  input.focus()
+}
+
+// 追加消息到聊天区
+function appendMsg(msg) {
+  const box = document.getElementById('msgBox')
+  // 移除 empty 占位
+  const empty = box.querySelector('.empty')
+  if (empty) empty.remove()
+
+  const isMe = msg.send_user_id === STATE.myId
+  const senderName = isMe ? '我' : (STATE.targetName || `用户#${msg.send_user_id}`)
+  const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('zh-CN', { hour12: false }) : ''
+
+  const div = document.createElement('div')
+  div.className = `msg ${isMe ? 'me' : 'other'}`
+  div.innerHTML = `${msg.content}<div class="meta">${senderName} ${time}</div>`
+  box.appendChild(div)
+  box.scrollTop = box.scrollHeight
+}
+
+// ============================================================
+//  轮询刷新用户列表（同时检测在线状态简化版）
+// ============================================================
+setInterval(() => {
+  if (STATE.token) loadUsers()
+}, 5000)
+
+</script>
+</body>
+</html>

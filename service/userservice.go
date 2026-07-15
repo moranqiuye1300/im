@@ -5,6 +5,7 @@ import (
 	"IM/utils"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -50,6 +51,19 @@ type PhoneQuery struct {
 // EmailQuery 按邮箱查询GET参数
 type EmailQuery struct {
 	Email string `form:"email" binding:"required,email" comment:"邮箱"`
+}
+type ChatRedisMsg struct {
+	SendUserID uint   `json:"send_user_id"`
+	RecvUserID uint   `json:"recv_user_id"`
+	GroupID    uint   `json:"group_id"`
+	Content    string `json:"content"`
+	MsgType    int    `json:"msg_type"` // 1=文本消息，2=图片消息，3=文件消息
+	Timestamp  int64  `json:"timestamp"`
+}
+type ChatHistoryQuery struct {
+	TargetID uint `form:"target_id" binding:"required,min=1" comment:"目标用户ID"`
+	Page     int  `form:"page" binding:"required,min=1" comment:"页码"`
+	Size     int  `form:"size" binding:"required,min=1,max=100" comment:"每页数量"`
 }
 
 // ---------------- 统一封装响应工具函数 ----------------
@@ -108,7 +122,15 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
-	// 修复：加密逻辑放在入库之前
+	// 检查用户名是否已存在
+	existing, _ := models.FindUserByName(user.Name)
+	if existing != nil && existing.ID != 0 {
+		respFail(c, 400, "用户名已存在")
+		return
+	}
+
+	// 自动生成唯一身份标识
+	user.Identity = utils.Md5Encode(fmt.Sprintf("%d%s", time.Now().UnixNano(), user.Name))
 	user.Salt = utils.RandomSalt(16) // 生成随机盐
 	user.Password = utils.MakePassword(user.Password, user.Salt)
 
@@ -328,6 +350,7 @@ func Login(c *gin.Context) {
 	})
 }
 
+
 // WS升级器
 var upGrade = websocket.Upgrader{
 	ReadBufferSize:  1024,
@@ -337,57 +360,69 @@ var upGrade = websocket.Upgrader{
 	},
 }
 
-// 在线客户端管理
+// 在线客户端管理：按用户ID索引，支持多设备登录
 var (
-	onlineClients = make(map[*websocket.Conn]bool)
-	clientMu      sync.Mutex
-	writeMu       sync.Mutex // 并发写ws锁，防止1006异常关闭
+	userConns = make(map[uint]map[*websocket.Conn]struct{})
+	connMu    sync.RWMutex
+	writeMu   sync.Mutex // 并发写ws锁，防止1006异常关闭
 )
 
-// broadcast 接收redis消息，推送给所有在线ws客户端 + 异步入库
+// sendToUser 向指定用户的所有在线设备推送消息
+func sendToUser(recvUserID uint, msg []byte) {
+	connMu.RLock()
+	conns, ok := userConns[recvUserID]
+	connMu.RUnlock()
+	if !ok {
+		return
+	}
+	for conn := range conns {
+		writeMu.Lock()
+		err := conn.WriteMessage(websocket.TextMessage, msg)
+		writeMu.Unlock()
+		if err != nil {
+			log.Printf("推送消息给用户%d失败: %v", recvUserID, err)
+			connMu.Lock()
+			delete(conns, conn)
+			if len(userConns[recvUserID]) == 0 {
+				delete(userConns, recvUserID)
+			}
+			connMu.Unlock()
+			_ = conn.Close()
+		}
+	}
+}
+
+// Broadcast 接收redis消息，路由给目标用户 + 异步入库
 func Broadcast(payload string) {
-	// 解析Redis中携带用户ID的JSON消息
-	var data map[string]any
-	err := json.Unmarshal([]byte(payload), &data)
-	if err != nil {
+	var msg ChatRedisMsg
+	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
 		log.Println("解析Redis消息JSON失败：", err)
 		return
 	}
-	sendUID := uint(data["send_user_id"].(float64))
-	content := data["content"].(string)
 
-	// 异步入库：数据库操作全部交给models层，service不直接操作DB
+	// 异步入库
 	go func() {
 		chatMsg := &models.ChatMsg{
-			SendUserID: sendUID,
-			RecvUserID: 0, // 全局群聊，私聊字段置0
-			GroupID:    0,
-			Content:    content,
-			MsgType:    1, // 1=文本消息
+			SendUserID: msg.SendUserID,
+			RecvUserID: msg.RecvUserID,
+			GroupID:    msg.GroupID,
+			Content:    msg.Content,
+			MsgType:    msg.MsgType,
 		}
 		if err := models.CreateChatMsg(chatMsg); err != nil {
 			log.Println("models保存聊天消息失败：", err)
 		}
 	}()
 
-	// 广播纯文本内容给所有前端
-	msg := []byte(content)
-	clientMu.Lock()
-	defer clientMu.Unlock()
-
-	for conn := range onlineClients {
-		writeMu.Lock()
-		writeErr := conn.WriteMessage(websocket.TextMessage, msg)
-		writeMu.Unlock()
-		if writeErr != nil {
-			log.Printf("推送消息给客户端失败: %v", writeErr)
-			delete(onlineClients, conn)
-			_ = conn.Close()
-		}
-	}
+	// 推送给接收方 + 回显给发送方（确认送达）
+	msgBytes, _ := json.Marshal(msg)
+	sendToUser(msg.RecvUserID, msgBytes)
+	sendToUser(msg.SendUserID, msgBytes)
 }
+
+// SendMsg WebSocket 连接处理
 func SendMsg(c *gin.Context) {
-	// ========== Token鉴权逻辑 ==========
+	// ========== Token鉴权 ==========
 	tokenStr := c.Query("token")
 	if tokenStr == "" {
 		log.Println("WS拒绝连接：未携带token参数")
@@ -408,21 +443,27 @@ func SendMsg(c *gin.Context) {
 		return
 	}
 
-	// 2. 上线加入在线集合
-	clientMu.Lock()
-	onlineClients[conn] = true
-	clientMu.Unlock()
+	// 2. 上线：加入在线集合
+	connMu.Lock()
+	if userConns[loginUserID] == nil {
+		userConns[loginUserID] = make(map[*websocket.Conn]struct{})
+	}
+	userConns[loginUserID][conn] = struct{}{}
+	connMu.Unlock()
 
 	// 3. 下线清理
 	defer func() {
-		clientMu.Lock()
-		delete(onlineClients, conn)
-		clientMu.Unlock()
+		connMu.Lock()
+		delete(userConns[loginUserID], conn)
+		if len(userConns[loginUserID]) == 0 {
+			delete(userConns, loginUserID)
+		}
+		connMu.Unlock()
 		_ = conn.Close()
-		log.Printf("用户ID:%d 客户端连接关闭", loginUserID)
+		log.Printf("用户ID:%d 离线", loginUserID)
 	}()
 
-	// 心跳保活，避免1006断开
+	// 心跳保活
 	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	conn.SetPongHandler(func(string) error {
 		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -436,22 +477,29 @@ func SendMsg(c *gin.Context) {
 			log.Println("读取消息错误：", err)
 			break
 		}
-		content := string(message)
-		log.Printf("用户%d发送消息：%s", loginUserID, content)
 
-		// 组装结构化数据：携带发送人ID，发布到Redis
-		msgData := map[string]any{
-			"send_user_id": loginUserID,
-			"content":      content,
+		// 解析客户端JSON消息
+		var clientMsg ChatRedisMsg
+		if err := json.Unmarshal(message, &clientMsg); err != nil || clientMsg.RecvUserID == 0 {
+			log.Printf("用户%d消息格式错误", loginUserID)
+			writeMu.Lock()
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"请使用JSON格式: {\"recv_user_id\":123,\"content\":\"hello\"}"}`))
+			writeMu.Unlock()
+			continue
 		}
-		jsonBuf, err := json.Marshal(msgData)
+
+		clientMsg.SendUserID = loginUserID
+		if clientMsg.MsgType == 0 {
+			clientMsg.MsgType = 1 // 默认文本消息
+		}
+		clientMsg.Timestamp = time.Now().UnixMilli()
+
+		// 发布到Redis，由Broadcast处理持久化和推送
+		jsonBuf, err := json.Marshal(clientMsg)
 		if err != nil {
 			log.Println("消息序列化失败：", err)
 			continue
 		}
-		err = utils.Publish(c.Request.Context(), "websocket", string(jsonBuf))
-		if err != nil {
-			log.Println("redis发布失败：", err)
-		}
+		_ = utils.Publish(c.Request.Context(), "websocket", string(jsonBuf))
 	}
 }
